@@ -21,14 +21,34 @@ from torch.utils.data import DataLoader
 
 from dl_har_model.eval import eval_one_epoch, eval_model
 from utils import paint, AverageMeter
-from dl_har_model.train_utils import compute_center_loss, get_center_delta, mixup_data, MixUpLoss, init_weights, \
-    init_loss, init_optimizer, init_scheduler, seed_torch
+from dl_har_model.train_utils import (
+    compute_center_loss,
+    get_center_delta,
+    mixup_data,
+    MixUpLoss,
+    init_weights,
+    init_loss,
+    init_optimizer,
+    init_scheduler,
+    seed_torch,
+)
 from dl_har_dataloader.datasets import SensorDataset
 
 train_on_gpu = torch.cuda.is_available()  # Check for cuda
 
+from wimusim.dataset import WIMUSimDataset, WIMUSimCollator, SubjectSpecificSampler
 
-def split_validate(model, train_args, dataset_args, seeds=None, verbose=False, keep_scaling_params=False):
+
+def split_validate(
+    model,
+    train_args,
+    dataset_args,
+    seeds=None,
+    verbose=False,
+    keep_scaling_params=False,
+    use_sim=False,
+    sim_config={},
+):
     """
     Train model for a number of epochs using split validation.
 
@@ -40,22 +60,27 @@ def split_validate(model, train_args, dataset_args, seeds=None, verbose=False, k
     :param list seeds: A dict containing all random seeds used for training.
     :param bool keep_scaling_params: A boolean indicating whether to keep the scaling parameters from the training set
     for the validation and test sets.
+    :param bool use_sim: A boolean indicating whether to use the WIMUSimDataset for training.
+    :param dict sim_config: A dict containing the configuration for the WIMUSimDataset.
     :return: training and validation losses, accuracies, f1 weighted and macro across epochs and raw predictions
     """
 
-    train_prefix = dataset_args.pop('prefix', None)
+    train_prefix = dataset_args.pop("prefix", None)
     print("train_prefix", train_prefix)
     train_data = SensorDataset(prefix=train_prefix, **dataset_args)
 
     if keep_scaling_params:
         # keep these values for val and test datasets
-        dataset_args['mean'] = train_data.mean
-        dataset_args['std'] = train_data.std
-        dataset_args['min_vals'] = train_data.min_vals  # None
-        dataset_args['max_vals'] = train_data.max_vals  # None
+        dataset_args["mean"] = train_data.mean
+        dataset_args["std"] = train_data.std
+        dataset_args["min_vals"] = train_data.min_vals  # None
+        dataset_args["max_vals"] = train_data.max_vals  # None
 
-    val_data = SensorDataset(prefix='val', **dataset_args)
-    test_data = SensorDataset(prefix='test', **dataset_args)
+    if use_sim:
+        train_sim_data = WIMUSimDataset(**sim_config)
+
+    val_data = SensorDataset(prefix="val", **dataset_args)
+    test_data = SensorDataset(prefix="test", **dataset_args)
     if seeds is None:
         seeds = [1]
     if verbose:
@@ -78,38 +103,82 @@ def split_validate(model, train_args, dataset_args, seeds=None, verbose=False, k
         model.path_checkpoints = base_path_checkpoints + f"/seed_{seed}"
         seed_torch(seed)
         # Currently, passing test_data for train_model() as well for debugging purpose (not used for training the model)
-        t_loss, t_acc, t_fm, t_fw, v_loss, v_acc, v_fm, v_fw, criterion = \
-            train_model(model, train_data, val_data, test_data, seed=seed, verbose=True, **train_args)  # Needs to be val_data
+        if use_sim:
+            (
+                t_loss,
+                t_acc,
+                t_fm,
+                t_fw,
+                v_loss,
+                v_acc,
+                v_fm,
+                v_fw,
+                criterion,
+            ) = train_model(
+                model,
+                train_data,
+                val_data,
+                test_data,
+                sim_data=train_sim_data,
+                seed=seed,
+                verbose=True,
+                **train_args,
+            )
+        else:
+            (
+                t_loss,
+                t_acc,
+                t_fm,
+                t_fw,
+                v_loss,
+                v_acc,
+                v_fm,
+                v_fw,
+                criterion,
+            ) = train_model(
+                model,
+                train_data,
+                val_data,
+                test_data,
+                seed=seed,
+                verbose=True,
+                **train_args,
+            )  # Needs to be val_data
         _, _, _, _, _, val_preds = eval_model(model, val_data, criterion, seed=seed)
-        loss_test, acc_test, fm_test, fw_test, elapsed, test_preds = eval_model(model, test_data, criterion, seed=seed)
+        loss_test, acc_test, fm_test, fw_test, elapsed, test_preds = eval_model(
+            model, test_data, criterion, seed=seed
+        )
 
-        results_row = {'v_type': 'split',
-                       'seed': seed,
-                       'sbj': -1,
-                       't_loss': t_loss,
-                       't_acc': t_acc,
-                       't_fm': t_fm,
-                       't_fw': t_fw,
-                       'v_loss': v_loss,
-                       'v_acc': v_acc,
-                       'v_fm': v_fm,
-                       'v_fw': v_fw
-                       }
+        results_row = {
+            "v_type": "split",
+            "seed": seed,
+            "sbj": -1,
+            "t_loss": t_loss,
+            "t_acc": t_acc,
+            "t_fm": t_fm,
+            "t_fw": t_fw,
+            "v_loss": v_loss,
+            "v_acc": v_acc,
+            "v_fm": v_fm,
+            "v_fw": v_fw,
+        }
 
-        tests_results_row = {'v_type': 'split',
-                             'seed': seed,
-                             'test_loss': loss_test,
-                             'test_acc': acc_test,
-                             'test_fm': fm_test,
-                             'test_fw': fw_test,
-                             }
+        tests_results_row = {
+            "v_type": "split",
+            "seed": seed,
+            "test_loss": loss_test,
+            "test_acc": acc_test,
+            "test_fm": fm_test,
+            "test_fw": fw_test,
+        }
 
-        preds_row = {'v_type': 'split',
-                     'seed': seed,
-                     'sbj': -1,
-                     'val_preds': val_preds.tolist(),
-                     'test_preds': test_preds.tolist(),
-                     }
+        preds_row = {
+            "v_type": "split",
+            "seed": seed,
+            "sbj": -1,
+            "val_preds": val_preds.tolist(),
+            "test_preds": test_preds.tolist(),
+        }
 
         results_list.append(results_row)
         test_results_list.append(tests_results_row)
@@ -153,9 +222,11 @@ def loso_cross_validate(model, train_args, dataset_args, seeds, verbose=False):
     results_list = []
     preds_list = []
 
-    num_users = len(glob(os.path.join(dataset_args['path_processed'], 'User_*.npz')))
-    users = [os.path.splitext(os.path.basename(x))[0] for x in glob(os.path.join(dataset_args['path_processed'],
-                                                                                 'User_*.npz'))]
+    num_users = len(glob(os.path.join(dataset_args["path_processed"], "User_*.npz")))
+    users = [
+        os.path.splitext(os.path.basename(x))[0]
+        for x in glob(os.path.join(dataset_args["path_processed"], "User_*.npz"))
+    ]
 
     base_path_checkpoints = model.path_checkpoints
 
@@ -164,7 +235,6 @@ def loso_cross_validate(model, train_args, dataset_args, seeds, verbose=False):
             print(paint("Running with random seed set to {0}...".format(str(seed))))
         seed_torch(seed)
         for i, val_user in enumerate(users):
-
             model.path_checkpoints = base_path_checkpoints + f"/seed_{seed}/" + val_user
 
             train_users = users.copy()
@@ -173,45 +243,62 @@ def loso_cross_validate(model, train_args, dataset_args, seeds, verbose=False):
             train_dataset = SensorDataset(prefix=train_users, **dataset_args)
             val_dataset = SensorDataset(prefix=val_user, **dataset_args)
 
-            t_loss, t_acc, t_fm, t_fw, v_loss, v_acc, v_fm, v_fw, criterion = \
-                train_model(model, train_dataset, val_dataset, seed=seed, verbose=True, **train_args)
+            (
+                t_loss,
+                t_acc,
+                t_fm,
+                t_fw,
+                v_loss,
+                v_acc,
+                v_fm,
+                v_fw,
+                criterion,
+            ) = train_model(
+                model, train_dataset, val_dataset, seed=seed, verbose=True, **train_args
+            )
 
-            results_row = {'v_type': 'loso',
-                           'seed': seed,
-                           'sbj': val_user,
-                           't_loss': t_loss,
-                           't_acc': t_acc,
-                           't_fm': t_fm,
-                           't_fw': t_fw,
-                           'v_loss': v_loss,
-                           'v_acc': v_acc,
-                           'v_fm': v_fm,
-                           'v_fw': v_fw
-                           }
+            results_row = {
+                "v_type": "loso",
+                "seed": seed,
+                "sbj": val_user,
+                "t_loss": t_loss,
+                "t_acc": t_acc,
+                "t_fm": t_fm,
+                "t_fw": t_fw,
+                "v_loss": v_loss,
+                "v_acc": v_acc,
+                "v_fm": v_fm,
+                "v_fw": v_fw,
+            }
 
             results_list.append(results_row)
 
-            _, _, _, _, _, val_preds = eval_model(model, val_dataset, criterion, seed=seed)
+            _, _, _, _, _, val_preds = eval_model(
+                model, val_dataset, criterion, seed=seed
+            )
 
-            preds_row = {'v_type': 'loso',
-                         'seed': seed,
-                         'sbj': val_user,
-                         'val_preds': val_preds.tolist(),
-                         'test_preds': None,
-                         }
+            preds_row = {
+                "v_type": "loso",
+                "seed": seed,
+                "sbj": val_user,
+                "val_preds": val_preds.tolist(),
+                "test_preds": None,
+            }
 
             preds_list.append(preds_row)
 
             if verbose:
-                print("SUBJECT: {}/{}".format(i + 1, num_users),
-                      "\nAvg. Train Loss: {:.4f}".format(np.mean(t_loss)),
-                      "Train Acc: {:.4f}".format(t_acc[-1]),
-                      "Train F1 (M): {:.4f}".format(t_fm[-1]),
-                      "Train F1 (W): {:.4f}".format(t_fw[-1]),
-                      "\nValid Loss: {:.4f}".format(np.mean(v_loss)),
-                      "Valid Acc: {:.4f}".format(v_acc[-1]),
-                      "Valid F1 (M): {:.4f}".format(v_fm[-1]),
-                      "Valid F1 (W): {:.4f}".format(v_fw[-1]))
+                print(
+                    "SUBJECT: {}/{}".format(i + 1, num_users),
+                    "\nAvg. Train Loss: {:.4f}".format(np.mean(t_loss)),
+                    "Train Acc: {:.4f}".format(t_acc[-1]),
+                    "Train F1 (M): {:.4f}".format(t_fm[-1]),
+                    "Train F1 (W): {:.4f}".format(t_fw[-1]),
+                    "\nValid Loss: {:.4f}".format(np.mean(v_loss)),
+                    "Valid Acc: {:.4f}".format(v_acc[-1]),
+                    "Valid F1 (M): {:.4f}".format(v_fm[-1]),
+                    "Valid F1 (W): {:.4f}".format(v_fw[-1]),
+                )
 
     # After the loop, convert lists of dictionaries to DataFrames
     results_array = pd.DataFrame(results_list)
@@ -226,10 +313,37 @@ def loso_cross_validate(model, train_args, dataset_args, seeds, verbose=False):
     return results_array, None, preds_array
 
 
-def train_model(model, train_data, val_data, test_data=None, batch_size_train=256, batch_size_test=256, optimizer='Adam',
-                use_weights=True, lr=0.001, lr_schedule='step', lr_step=10, lr_decay=0.9, weights_init='orthogonal',
-                epochs=300, print_freq=100, loss='CrossEntropy', smoothing=0.0, weight_decay=0.0, seed=1,
-                centerloss=False, lr_cent=1e-4, beta=0.5, mixup=False, alpha=0.5, verbose=False, save_checkpoints=False):
+def train_model(
+    model,
+    train_data,
+    val_data,
+    test_data=None,
+    sim_data=None,
+    batch_size_train=256,
+    batch_size_test=256,
+    optimizer="Adam",
+    use_weights=True,
+    lr=0.001,
+    lr_schedule="step",
+    lr_step=10,
+    lr_decay=0.9,
+    weights_init="orthogonal",
+    epochs=300,
+    print_freq=100,
+    loss="CrossEntropy",
+    smoothing=0.0,
+    weight_decay=0.0,
+    seed=1,
+    centerloss=False,
+    lr_cent=1e-4,
+    beta=0.5,
+    mixup=False,
+    alpha=0.5,
+    verbose=False,
+    save_checkpoints=False,
+    paramix=True,
+    scenario="ideal",
+):
     """
     Train model for a number of epochs.
 
@@ -264,15 +378,63 @@ def train_model(model, train_data, val_data, test_data=None, batch_size_train=25
     :return: training and validation losses, accuracies, f1 weighted and macro across epochs
     """
 
-    loader = DataLoader(train_data, batch_size_train, True, worker_init_fn=np.random.seed(int(seed)))
-    loader_val = DataLoader(val_data, batch_size_test, False, worker_init_fn=np.random.seed(int(seed)))
+    loader = DataLoader(
+        train_data, batch_size_train, True, worker_init_fn=np.random.seed(int(seed))
+    )
+    if sim_data is not None:
+        collator = WIMUSimCollator(
+            P_dict=sim_data.P_dict,
+            B_dict=sim_data.B_dict,
+            D_ori_keys=sim_data.D_ori_keys,
+            sampling_rate=25,
+            mean=train_data.mean,
+            std=train_data.std,
+            paramix=paramix,
+            idx_range_dict=sim_data.idx_range_dict,
+            aug_list=sim_data.aug_list,
+            aug_prob=sim_data.aug_prob,
+            aug_params=sim_data.aug_params,
+            rot_list_type=scenario,
+        )
+
+        # TODO: Change this depending on paramix is True of False
+        if paramix:
+            print("Paramix is enabled")
+            loader_sim = DataLoader(
+                sim_data,
+                batch_size_train,
+                shuffle=True,
+                worker_init_fn=np.random.seed(int(seed)),
+                collate_fn=collator,
+            )
+        else:
+            print("Paramix is disabled.")
+            sampler = SubjectSpecificSampler(
+                sim_data.idx_range_dict, batch_size=batch_size_train, shuffle=True
+            )
+            loader_sim = DataLoader(
+                sim_data,
+                batch_sampler=sampler,
+                worker_init_fn=np.random.seed(int(seed)),
+                collate_fn=collator,
+            )
+
+    loader_val = DataLoader(
+        val_data, batch_size_test, False, worker_init_fn=np.random.seed(int(seed))
+    )
     if test_data is not None:
-        loader_test = DataLoader(test_data, batch_size_test, False, worker_init_fn=np.random.seed(int(seed)))
+        loader_test = DataLoader(
+            test_data, batch_size_test, False, worker_init_fn=np.random.seed(int(seed))
+        )
 
     if use_weights:
-        class_weights = torch.from_numpy(class_weight.compute_class_weight('balanced',
-                                                                           classes=np.unique(train_data.target + 1),
-                                                                           y=train_data.target + 1)).float()
+        class_weights = torch.from_numpy(
+            class_weight.compute_class_weight(
+                "balanced",
+                classes=np.unique(train_data.target + 1),
+                y=train_data.target + 1,
+            )
+        ).float()
     else:
         class_weights = None
 
@@ -297,14 +459,42 @@ def train_model(model, train_data, val_data, test_data=None, batch_size_train=25
     v_loss, v_acc, v_fm, v_fw = [], [], [], []
     te_loss, te_acc, te_fm, te_fw = [], [], [], []
 
-    path_checkpoints = getattr(model, 'path_checkpoints', './models/custom_model/checkpoints')
+    path_checkpoints = getattr(
+        model, "path_checkpoints", "./models/custom_model/checkpoints"
+    )
 
     for epoch in range(epochs):
         if verbose:
             print("--" * 50)
             print("[-] Learning rate: ", optimizer.param_groups[0]["lr"])
-        train_one_epoch(model, loader, criterion, optimizer, print_freq, centerloss, lr_cent, beta,
-                    mixup, alpha, verbose)
+
+        train_one_epoch(
+            model,
+            loader,
+            criterion,
+            optimizer,
+            print_freq,
+            centerloss,
+            lr_cent,
+            beta,
+            mixup,
+            alpha,
+            verbose,
+        )
+        if sim_data is not None:
+            train_one_epoch(
+                model,
+                loader_sim,
+                criterion,
+                optimizer,
+                print_freq,
+                centerloss,
+                lr_cent,
+                beta,
+                mixup,
+                alpha,
+                verbose,
+            )
         loss, acc, fm, fw = eval_one_epoch(model, loader, criterion)
         loss_val, acc_val, fm_val, fw_val = eval_one_epoch(model, loader_val, criterion)
 
@@ -318,12 +508,13 @@ def train_model(model, train_data, val_data, test_data=None, batch_size_train=25
         v_fw.append(fw_val)
 
         if test_data is not None:
-            loss_test, acc_test, fm_test, fw_test = eval_one_epoch(model, loader_test, criterion)
+            loss_test, acc_test, fm_test, fw_test = eval_one_epoch(
+                model, loader_test, criterion
+            )
             te_loss.append(loss_test)
             te_acc.append(acc_test)
             te_fm.append(fm_test)
             te_fw.append(fw_test)
-
 
         if verbose:
             print(
@@ -361,7 +552,9 @@ def train_model(model, train_data, val_data, test_data=None, batch_size_train=25
         metric = fm_val
         if metric >= metric_best:
             if verbose:
-                print(paint(f"[*] Saving checkpoint... ({metric_best}->{metric})", "blue"))
+                print(
+                    paint(f"[*] Saving checkpoint... ({metric_best}->{metric})", "blue")
+                )
             metric_best = metric
             torch.save(
                 checkpoint, os.path.join(path_checkpoints, "checkpoint_best.pth")
@@ -371,7 +564,7 @@ def train_model(model, train_data, val_data, test_data=None, batch_size_train=25
             if epoch % 5 == 0:
                 torch.save(
                     checkpoint,
-                    os.path.join(path_checkpoints, f"checkpoint_{epoch}.pth")
+                    os.path.join(path_checkpoints, f"checkpoint_{epoch}.pth"),
                 )
 
         if lr_step > 0:
@@ -380,8 +573,19 @@ def train_model(model, train_data, val_data, test_data=None, batch_size_train=25
     return t_loss, t_acc, t_fm, t_fw, v_loss, v_acc, v_fm, v_fw, criterion
 
 
-def train_one_epoch(model, loader, criterion, optimizer, print_freq, centerloss, lr_cent, beta,
-                    mixup, alpha, verbose):
+def train_one_epoch(
+    model,
+    loader,
+    criterion,
+    optimizer,
+    print_freq,
+    centerloss,
+    lr_cent,
+    beta,
+    mixup,
+    alpha,
+    verbose,
+):
     """
     Train model for a one of epoch.
 
@@ -411,7 +615,9 @@ def train_one_epoch(model, loader, criterion, optimizer, print_freq, centerloss,
             target = target.view(-1)
 
         if centerloss:
-            assert hasattr(model, 'centers'), "Model must implement class center tracking to enable centerloss."
+            assert hasattr(
+                model, "centers"
+            ), "Model must implement class center tracking to enable centerloss."
             centers = model.centers
 
         if mixup:
@@ -437,7 +643,9 @@ def train_one_epoch(model, loader, criterion, optimizer, print_freq, centerloss,
         optimizer.step()
 
         if centerloss:
-            center_deltas = get_center_delta(z.data.float(), centers.float(), target, lr_cent, train_on_gpu)
+            center_deltas = get_center_delta(
+                z.data.float(), centers.float(), target, lr_cent, train_on_gpu
+            )
             model.centers = centers - center_deltas
 
         if verbose:
