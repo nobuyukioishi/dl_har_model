@@ -560,12 +560,14 @@ def train_model(
             "torch_rnd_state": torch.get_rng_state(),
         }
         metric = fm_val
-        if metric >= metric_best and epoch > 5:  # Ignore first 5 epochs
+        if metric >= metric_best:  # Ignore first 5 epochs
             if verbose:
                 print(
                     paint(f"[*] Saving checkpoint... ({metric_best}->{metric})", "blue")
                 )
-            metric_best = metric
+            if epoch > 5:
+                # Don't update the best metric for the first 5 epochs as it's unstable
+                metric_best = metric
             torch.save(
                 checkpoint, os.path.join(path_checkpoints, "checkpoint_best.pth")
             )
