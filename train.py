@@ -10,6 +10,7 @@
 import os
 import random
 import time
+import warnings
 from datetime import timedelta
 from glob import glob
 
@@ -36,7 +37,7 @@ from dl_har_dataloader.datasets import SensorDataset
 
 train_on_gpu = torch.cuda.is_available()  # Check for cuda
 
-from wimusim.dataset import WIMUSimDataset, WIMUSimCollator, SubjectSpecificSampler
+# from wimusim.dataset import WIMUSimDataset, WIMUSimCollator, SubjectSpecificSampler
 
 
 def split_validate(
@@ -47,7 +48,8 @@ def split_validate(
     verbose=False,
     keep_scaling_params=False,
     use_sim=False,
-    sim_config={},
+    sim_data=None,
+    sim_config=None,
 ):
     """
     Train model for a number of epochs using split validation.
@@ -77,7 +79,9 @@ def split_validate(
         dataset_args["max_vals"] = train_data.max_vals  # None
 
     if use_sim:
-        train_sim_data = WIMUSimDataset(**sim_config)
+        # Note: this was used with REALDISP dataset.
+        # train_sim_data = WIMUSimDataset(**sim_config)
+        pass
 
     val_data = SensorDataset(prefix="val", **dataset_args)
     test_data = SensorDataset(prefix="test", **dataset_args)
@@ -119,7 +123,8 @@ def split_validate(
                 train_data,
                 val_data,
                 test_data,
-                sim_data=train_sim_data,
+                sim_data=sim_data,
+                sim_config=sim_config,
                 seed=seed,
                 verbose=True,
                 **train_args,
@@ -144,6 +149,7 @@ def split_validate(
                 verbose=True,
                 **train_args,
             )  # Needs to be val_data
+
         _, _, _, _, _, val_preds = eval_model(model, val_data, criterion, seed=seed)
         loss_test, acc_test, fm_test, fw_test, elapsed, test_preds = eval_model(
             model, test_data, criterion, seed=seed
@@ -343,6 +349,8 @@ def train_model(
     save_checkpoints=False,
     paramix=True,
     scenario="ideal",
+    sim_config: dict = None,
+    early_stopping=False,
 ):
     """
     Train model for a number of epochs.
@@ -381,43 +389,15 @@ def train_model(
     loader = DataLoader(
         train_data, batch_size_train, True, worker_init_fn=np.random.seed(int(seed))
     )
-    if sim_data is not None:
-        collator = WIMUSimCollator(
-            P_dict=sim_data.P_dict,
-            B_dict=sim_data.B_dict,
-            D_ori_keys=sim_data.D_ori_keys,
-            sampling_rate=25,
-            mean=train_data.mean,
-            std=train_data.std,
-            paramix=paramix,
-            idx_range_dict=sim_data.idx_range_dict,
-            aug_list=sim_data.aug_list,
-            aug_prob=sim_data.aug_prob,
-            aug_params=sim_data.aug_params,
-            rot_list_type=scenario,
-        )
 
-        # TODO: Change this depending on paramix is True of False
-        if paramix:
-            print("Paramix is enabled")
-            loader_sim = DataLoader(
-                sim_data,
-                batch_size_train,
-                shuffle=True,
-                worker_init_fn=np.random.seed(int(seed)),
-                collate_fn=collator,
-            )
-        else:
-            print("Paramix is disabled.")
-            sampler = SubjectSpecificSampler(
-                sim_data.idx_range_dict, batch_size=batch_size_train, shuffle=True
-            )
-            loader_sim = DataLoader(
-                sim_data,
-                batch_sampler=sampler,
-                worker_init_fn=np.random.seed(int(seed)),
-                collate_fn=collator,
-            )
+    if sim_data is not None:
+        loader_sim = DataLoader(
+            sim_data,
+            batch_size_train,
+            shuffle=True,
+            num_workers=0,
+            worker_init_fn=np.random.seed(int(seed)),
+        )
 
     loader_val = DataLoader(
         val_data, batch_size_test, False, worker_init_fn=np.random.seed(int(seed))
@@ -463,11 +443,13 @@ def train_model(
         model, "path_checkpoints", "./models/custom_model/checkpoints"
     )
 
+    no_improvement = 0
     for epoch in range(epochs):
         if verbose:
             print("--" * 50)
             print("[-] Learning rate: ", optimizer.param_groups[0]["lr"])
 
+        # Then train with real data
         train_one_epoch(
             model,
             loader,
@@ -481,7 +463,12 @@ def train_model(
             alpha,
             verbose,
         )
+
+        # Train with sim data first if provided
         if sim_data is not None:
+            loader_sim.dataset.generate_data(
+                n_combinations=sim_config["n_samples"]
+            )  ## only valid with WIMUSimDataset
             train_one_epoch(
                 model,
                 loader_sim,
@@ -495,6 +482,7 @@ def train_model(
                 alpha,
                 verbose,
             )
+
         loss, acc, fm, fw = eval_one_epoch(model, loader, criterion)
         loss_val, acc_val, fm_val, fw_val = eval_one_epoch(model, loader_val, criterion)
 
@@ -559,6 +547,17 @@ def train_model(
             torch.save(
                 checkpoint, os.path.join(path_checkpoints, "checkpoint_best.pth")
             )
+            no_improvement = 0
+        else:
+            no_improvement += 1
+
+            if early_stopping and no_improvement > 10:
+                print(
+                    paint(
+                        f"Early stopping after 10 epochs without improvement.", "blue"
+                    )
+                )
+                break
 
         if save_checkpoints:
             if epoch % 5 == 0:
@@ -634,7 +633,6 @@ def train_one_epoch(
         if centerloss:
             center_loss = compute_center_loss(z, centers, target)
             loss = loss + beta * center_loss
-
         losses.update(loss.item(), data.shape[0])
 
         optimizer.zero_grad()
