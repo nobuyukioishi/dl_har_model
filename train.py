@@ -78,10 +78,16 @@ def split_validate(
         dataset_args["min_vals"] = train_data.min_vals  # None
         dataset_args["max_vals"] = train_data.max_vals  # None
 
-    if use_sim:
+    if use_sim and sim_data is not None:
         # Note: this was used with REALDISP dataset.
         # train_sim_data = WIMUSimDataset(**sim_config)
-        pass
+        # sim_data
+        print("Setting scaling params...")
+        sim_data.scale_config = {
+            "type": "standardize",
+            "mean": train_data.mean,
+            "std": train_data.std,
+        }
 
     val_data = SensorDataset(prefix="val", **dataset_args)
     test_data = SensorDataset(prefix="test", **dataset_args)
