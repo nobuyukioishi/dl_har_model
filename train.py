@@ -449,25 +449,24 @@ def train_model(
             print("--" * 50)
             print("[-] Learning rate: ", optimizer.param_groups[0]["lr"])
 
-        if sim_config["sim_first"]:
+        if sim_data is not None and sim_config["sim_first"]:
             # Train with sim data first if provided
-            if sim_data is not None:
-                loader_sim.dataset.generate_data(
-                    n_combinations=sim_config["n_samples"]
-                )  ## only valid with WIMUSimDataset
-                train_one_epoch(
-                    model,
-                    loader_sim,
-                    criterion,
-                    optimizer,
-                    print_freq,
-                    centerloss,
-                    lr_cent,
-                    beta,
-                    mixup,
-                    alpha,
-                    verbose,
-                )
+            loader_sim.dataset.generate_data(
+                n_combinations=sim_config["n_samples"]
+            )  ## only valid with WIMUSimDataset
+            train_one_epoch(
+                model,
+                loader_sim,
+                criterion,
+                optimizer,
+                print_freq,
+                centerloss,
+                lr_cent,
+                beta,
+                mixup,
+                alpha,
+                verbose,
+            )
 
         # Then train with real data
         train_one_epoch(
@@ -484,26 +483,26 @@ def train_model(
             verbose,
         )
 
-        if not sim_config["sim_first"]:
+        if sim_data is not None and not sim_config["sim_first"]:
             print("Training with sim data")
             # Then train with sim data if provided
-            if sim_data is not None:
-                loader_sim.dataset.generate_data(
-                    n_combinations=sim_config["n_samples"]
-                )  ## only valid with WIMUSimDataset
-                train_one_epoch(
-                    model,
-                    loader_sim,
-                    criterion,
-                    optimizer,
-                    print_freq,
-                    centerloss,
-                    lr_cent,
-                    beta,
-                    mixup,
-                    alpha,
-                    verbose,
-                )
+
+            loader_sim.dataset.generate_data(
+                n_combinations=sim_config["n_samples"]
+            )  ## only valid with WIMUSimDataset
+            train_one_epoch(
+                model,
+                loader_sim,
+                criterion,
+                optimizer,
+                print_freq,
+                centerloss,
+                lr_cent,
+                beta,
+                mixup,
+                alpha,
+                verbose,
+            )
 
         loss, acc, fm, fw = eval_one_epoch(model, loader, criterion)
         loss_val, acc_val, fm_val, fw_val = eval_one_epoch(model, loader_val, criterion)
